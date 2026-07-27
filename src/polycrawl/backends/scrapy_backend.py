@@ -266,9 +266,25 @@ class ScrapyBackend(CrawlerBackend):
         cfg = self.config
         b = cfg.browser
 
+        args = list(b.extra_args)
+        blocked = set(b.blocked_resource_types) if b.block_resources else set()
+        # Block at the browser level wherever a flag can express it, because the
+        # alternative -- PLAYWRIGHT_ABORT_REQUEST -- routes *every* request
+        # through Python, and aborting is not free on the page either: a real
+        # live-scores site re-requested the images we aborted in a loop, 16,550
+        # requests in 25s, and never reached its `load` event. A flag means the
+        # requests are never issued at all.
+        if b.browser_type == "chromium":
+            if "image" in blocked:
+                args.append("--blink-settings=imagesEnabled=false")
+                blocked.discard("image")
+            if "font" in blocked:
+                args.append("--disable-remote-fonts")
+                blocked.discard("font")
+
         launch: dict[str, Any] = {"headless": b.headless}
-        if b.extra_args:
-            launch["args"] = list(b.extra_args)
+        if args:
+            launch["args"] = args
         if cfg.proxy:
             launch["proxy"] = {"server": cfg.proxy}
 
@@ -291,11 +307,14 @@ class ScrapyBackend(CrawlerBackend):
             "PLAYWRIGHT_MAX_PAGES_PER_CONTEXT": max(1, cfg.concurrency),
             "PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT": b.page_timeout_ms,
         }
-        if b.block_resources and b.blocked_resource_types:
-            blocked = frozenset(b.blocked_resource_types)
+        if blocked:
+            # Whatever the flags could not express. The predicate is consulted for
+            # every request whatever its type, so it is wired up only when
+            # something is genuinely left to block.
+            remaining = frozenset(blocked)
 
             def abort(request: Any) -> bool:
-                return request.resource_type in blocked
+                return request.resource_type in remaining
 
             settings["PLAYWRIGHT_ABORT_REQUEST"] = abort
         return settings

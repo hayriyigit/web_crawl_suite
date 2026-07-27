@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.1
+
+### Fixed
+
+- **Resource blocking made rendered crawls fail on real sites.** Both browser
+  backends now block images and fonts with Chromium launch flags instead of
+  intercepting requests. Interception routed every request through Python, and
+  aborting is visible to the page: a live-scores SPA re-requested the aborted
+  images 16,550 times in 25s and never fired `load`, so every wait strategy
+  except `domcontentloaded` timed out. With flags the same page reaches full
+  content in 2.9s — faster than not blocking at all.
+- **crawlee ignored `block_resources` entirely.** It was read from the config and
+  never applied, so pages loaded every image and `networkidle` never arrived
+  (60s timeout, now 4.0s).
+
 ## 0.2.0
 
 ### Added

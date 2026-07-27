@@ -123,6 +123,41 @@ both resolve to one instance with an idempotent `close()`.
 Verify with `pgrep -af headless` filtered to processes without `--type=`
 (everything with `--type=` is a renderer child, not a browser).
 
+## Resource blocking: use browser flags, not request interception
+
+Blocking images/fonts/media by intercepting requests (`page.route`,
+scrapy-playwright's `PLAYWRIGHT_ABORT_REQUEST`) looks like the obvious
+implementation and is a trap twice over.
+
+Every request — not only the blocked types — crosses into Python for the
+predicate. Worse, aborting is *visible to the page*: a site whose script retries
+images that fail will spin. Measured on a real live-scores SPA, one page produced
+
+```
+route calls=16829  by type={'image': 16550, 'script': 94, 'fetch': 126, ...}
+routing window=24.99s
+```
+
+and never fired its `load` event, so every wait strategy except
+`domcontentloaded` timed out. Blocking the same types with launch flags took the
+page to full content in 2.9s — *faster* than not blocking at all (4.7s), which is
+what blocking is supposed to do.
+
+```
+--blink-settings=imagesEnabled=false    # image
+--disable-remote-fonts                  # font
+```
+
+The requests are never issued, so there is nothing to retry and nothing to route.
+Both browser backends now do this (`_blocking_args`, `_playwright_settings`).
+`media` has no flag equivalent and is left alone rather than paying interception
+for one request in a few hundred. Non-chromium browsers fall back to
+interception, since the flags are Blink-specific.
+
+The same defect had a quieter form in the crawlee backend: `block_resources` was
+accepted from the config and then *silently ignored*, so pages loaded every image
+and `networkidle` never arrived (60s timeout, now 4.0s).
+
 ## crawl4ai
 
 - `BrowserConfig(user_agent=None)` crashes: it derives client hints and regexes

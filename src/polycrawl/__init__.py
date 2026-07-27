@@ -30,7 +30,7 @@ from .models import CrawledPage, FetchRequest, FetchResult, FetchStatus
 from .registry import BackendInfo, get_backend, list_backends, register
 from .sinks import JsonlSink, MemorySink, NullSink, Sink
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "BackendCapabilities",

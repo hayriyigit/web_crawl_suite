@@ -112,8 +112,9 @@ class CrawleeBackend(CrawlerBackend):
         )
 
         launch_options: dict[str, Any] = {}
-        if b.extra_args:
-            launch_options["args"] = list(b.extra_args)
+        args = list(b.extra_args) + _blocking_args(b)
+        if args:
+            launch_options["args"] = args
 
         context_options: dict[str, Any] = {
             "viewport": {"width": b.viewport_width, "height": b.viewport_height},
@@ -367,6 +368,30 @@ class CrawleeBackend(CrawlerBackend):
         self._pending = 0
         self._idle.set()
         log.warning("dropped outstanding crawlee requests: %s", reason)
+
+
+def _blocking_args(browser: Any) -> list[str]:
+    """Chromium flags implementing ``block_resources``.
+
+    Done with launch flags rather than by intercepting requests: interception
+    routes every request through Python, and aborting is not free on the page
+    either -- a site that re-requests images we abort can spin, which is enough
+    to stop it ever reaching ``load`` or ``networkidle``. A flag means the
+    requests are never issued.
+
+    ``media`` has no equivalent flag, so it is not blocked here; it is a small
+    share of requests on a text crawl, and paying interception for it would cost
+    more than it saves.
+    """
+    if not browser.block_resources or browser.browser_type != "chromium":
+        return []
+    blocked = set(browser.blocked_resource_types)
+    args = []
+    if "image" in blocked:
+        args.append("--blink-settings=imagesEnabled=false")
+    if "font" in blocked:
+        args.append("--disable-remote-fonts")
+    return args
 
 
 _isolated_client_cls: type[Any] | None = None

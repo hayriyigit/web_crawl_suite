@@ -152,6 +152,14 @@ For frameworks that hydrate a tick later:
 polycrawl crawl https://spa.example.com --wait-for "#app .loaded" --settle-ms 250
 ```
 
+**Check that you actually captured the content**, because a fast crawl of empty
+shells looks exactly like a fast crawl. On one real live-scores SPA every backend
+"opened" the page in ~1s and returned 5.3KB with none of the scores in it: the
+data arrives by XHR after DOM-ready. `--settle-ms 2000` or `--wait-until load`
+returned 17.4KB with all of it, in under 3s. Compare text size against
+`--no-render` on a couple of pages — if a browser is not getting you more than
+plain HTTP does, it is only costing you.
+
 This is verified rather than assumed. The test site injects its title, body text and links *only* at `DOMContentLoaded`, so a backend that does not really render fails the suite. `render: false` is held to the opposite assertion — that it does *not* see the JS-injected content — so the mode switch is proven to be a real switch.
 
 ## Tuning for load
