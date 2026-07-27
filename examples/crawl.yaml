@@ -1,0 +1,85 @@
+# A commented crawl configuration.
+#
+#   polycrawl crawl --config examples/crawl.yaml
+#
+# `polycrawl config` prints this file's full form with every default filled in.
+# Any field can also come from the environment: POLYCRAWL_CONCURRENCY=64,
+# POLYCRAWL_BROWSER__WAIT_UNTIL=load (nested keys use a double underscore).
+
+seeds:
+  - https://quotes.toscrape.com/
+
+# crawl4ai | crawlee | scrapy | any backend you have registered
+backend: scrapy
+
+# -- scale --------------------------------------------------------------------
+# Global ceiling on simultaneous fetches. The single most important knob.
+concurrency: 32
+# URLs handed to the backend per submit. Larger amortises the backend's own
+# scheduling; smaller reacts faster to rate limits.
+batch_size: 32
+# Batches in flight at once. >1 keeps the browser pool busy while a previous
+# batch waits on its slowest page.
+pipeline_depth: 2
+# Coroutines parsing HTML, independent of fetching. Raise this when pages are
+# large and the crawl is CPU-bound rather than network-bound.
+processor_workers: 4
+
+# -- limits -------------------------------------------------------------------
+max_pages: 500
+max_depth: 3
+max_retries: 2
+time_budget_s: 0          # 0 = unlimited
+memory_limit_pct: 85.0    # pause dispatch above this system memory usage
+
+# -- scope --------------------------------------------------------------------
+# site: same registrable domain | host: exact host | path: at or below the seed
+# path | any: follow anywhere (use with allow_patterns)
+scope: host
+deny_patterns:
+  - '/logout'
+  - '\.(zip|exe|dmg)$'
+
+# -- politeness ---------------------------------------------------------------
+politeness:
+  respect_robots: true
+  per_host_rps: 4.0         # starting rate; adapts from here
+  per_host_concurrency: 4
+  # Let 429/503 shrink a host's rate and clean responses grow it back.
+  adaptive: true
+  user_agent_token: polycrawl
+
+# -- browser (ignored when the backend does not render) -----------------------
+browser:
+  # domcontentloaded fires once the HTML is parsed and sync scripts have run.
+  # load and networkidle also wait on images, fonts and analytics beacons.
+  wait_until: domcontentloaded
+  page_timeout_ms: 30000
+  # For frameworks that hydrate a tick after DOM ready.
+  settle_ms: 0
+  wait_for_selector: null
+  # Blocking images, media and fonts is the largest single throughput win for
+  # text crawling -- typically 60-80% fewer bytes moved.
+  block_resources: true
+  blocked_resource_types: [image, media, font]
+
+# -- output -------------------------------------------------------------------
+output:
+  path: out/pages.jsonl
+  format: jsonl            # jsonl | jsonl.gz | none
+  include_html: false
+  include_text: true
+  include_links: true
+  # engine: extracted centrally, identical on every backend.
+  # backend: use a backend's own rendering (crawl4ai's markdown) where offered.
+  text_source: engine
+  max_text_chars: 120000
+
+# -- backend-specific ---------------------------------------------------------
+# Passed through verbatim to the selected backend.
+backend_options:
+  # scrapy only: false turns off the browser entirely.
+  render: true
+  # scrapy only: merged into the scrapy Settings for this crawl.
+  # settings:
+  #   DOWNLOAD_MAXSIZE: 4194304

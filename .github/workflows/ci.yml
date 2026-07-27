@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-and-unit:
+    # The unit suite needs no browser, so it stays fast enough to run on every
+    # supported interpreter.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra all --python ${{ matrix.python-version }}
+      - run: uv run ruff check src/ tests/
+      - run: uv run ruff format --check src/ tests/
+      - run: uv run pytest -m "not integration" -q
+
+  integration:
+    # Real browsers against the local test site: one interpreter is enough, and
+    # this is what proves the backends actually render and agree with each other.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra all
+      - run: uv run playwright install chromium --with-deps
+      - run: uv run pytest -m integration -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      # A wheel that installs but cannot resolve its own console script or
+      # backends is the failure mode this catches.
+      - run: |
+          uv venv /tmp/check
+          VIRTUAL_ENV=/tmp/check uv pip install dist/*.whl
+          /tmp/check/bin/polycrawl backends

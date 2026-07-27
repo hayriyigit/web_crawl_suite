@@ -1,0 +1,101 @@
+[project]
+name = "polycrawl"
+version = "0.2.0"
+description = "Pluggable, high-throughput async web crawler with swappable fetch backends (crawl4ai, crawlee, scrapy)"
+readme = "README.md"
+authors = [
+    { name = "hayriyigit", email = "hayriyigit@protonmail.com" }
+]
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+keywords = ["crawler", "scraper", "async", "playwright", "scrapy", "crawlee", "crawl4ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Typing :: Typed",
+]
+dependencies = [
+    "orjson>=3.10",
+    "protego>=0.3",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "pyyaml>=6.0",
+    "rich>=13.7",
+    "selectolax>=0.3.21",
+    "typer>=0.12",
+    "uvloop>=0.20; sys_platform != 'win32'",
+]
+
+[project.optional-dependencies]
+crawl4ai = ["crawl4ai>=0.9.0"]
+crawlee = ["crawlee[playwright]>=1.0.0"]
+# crawl_async(), the asyncio entry point this backend drives, landed in 2.14.
+scrapy = ["scrapy>=2.14", "scrapy-playwright>=0.0.42"]
+all = [
+    "crawl4ai>=0.9.0",
+    "crawlee[playwright]>=1.0.0",
+    "scrapy>=2.14",
+    "scrapy-playwright>=0.0.42",
+]
+
+[project.urls]
+Homepage = "https://github.com/hayriyigit/web_crawl_suite"
+Repository = "https://github.com/hayriyigit/web_crawl_suite"
+Issues = "https://github.com/hayriyigit/web_crawl_suite/issues"
+
+[project.scripts]
+polycrawl = "polycrawl.cli:app"
+
+# Backends are discovered through this entry-point group. A third-party package
+# can ship its own backend by advertising the same group -- no edits here needed.
+[project.entry-points."polycrawl.backends"]
+crawl4ai = "polycrawl.backends.crawl4ai_backend:Crawl4AIBackend"
+crawlee = "polycrawl.backends.crawlee_backend:CrawleeBackend"
+scrapy = "polycrawl.backends.scrapy_backend:ScrapyBackend"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/polycrawl"]
+# Ships the py.typed marker so type checkers in dependent projects use the
+# annotations rather than treating every import as Any.
+artifacts = ["src/polycrawl/py.typed"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/polycrawl", "tests", "examples", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# tests/ is on the path so the integration tests can import the local site server.
+pythonpath = ["tests"]
+markers = ["integration: exercises a real backend and a real browser (slow)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately take a `timeout` argument (ASYNC109) and poll for a
+# condition the engine reaches asynchronously (ASYNC110); both rules are about
+# production code where an Event or asyncio.timeout would be the better shape.
+"tests/**" = ["ASYNC109", "ASYNC110"]
