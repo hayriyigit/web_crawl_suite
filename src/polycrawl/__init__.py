@@ -28,9 +28,10 @@ from .engine import CrawlEngine, crawl
 from .metrics import Metrics
 from .models import CrawledPage, FetchRequest, FetchResult, FetchStatus
 from .registry import BackendInfo, get_backend, list_backends, register
+from .service import FetchService, ServiceBusy, ServiceStats
 from .sinks import JsonlSink, MemorySink, NullSink, Sink
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "BackendCapabilities",
@@ -42,6 +43,7 @@ __all__ = [
     "CrawlerBackend",
     "FetchRequest",
     "FetchResult",
+    "FetchService",
     "FetchStatus",
     "JsonlSink",
     "MemorySink",
@@ -49,6 +51,8 @@ __all__ = [
     "NullSink",
     "OutputSettings",
     "PolitenessSettings",
+    "ServiceBusy",
+    "ServiceStats",
     "Sink",
     "__version__",
     "crawl",

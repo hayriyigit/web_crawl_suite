@@ -142,6 +142,35 @@ mine = "my_package.backend:MyBackend"
 
 See [examples/custom_backend.py](examples/custom_backend.py) for a complete working httpx backend, and `tests/conftest.py` for the reference `FakeBackend` the engine tests run against with no browser.
 
+## In a web application
+
+`CrawlEngine` runs *one crawl* — it seeds from config, owns a frontier, dedups permanently and finishes when that frontier drains. An API request is a different shape, so there is a second entry point for it:
+
+```python
+from polycrawl import CrawlConfig, FetchService
+
+service = FetchService(CrawlConfig(
+    backend="scrapy",
+    backend_options={"render": False},   # no browser: several times the throughput
+    concurrency=32,
+    seeds=["https://example.com"],       # required by the config, unused here
+))
+await service.start()                    # once per process, in your startup hook
+pages = await service.fetch(["https://a.example", "https://b.example"])
+await service.close()
+```
+
+One warm backend per process, callers await their own results, and the state that must be shared — robots cache, per-host pacing — is shared instead of rebuilt per call. Capacity is bounded: when it is full, `fetch` raises `ServiceBusy` rather than queueing without limit, because an overloaded pool that keeps accepting work turns one slow host into timeouts for everybody.
+
+[examples/fastapi_service.py](examples/fastapi_service.py) is a complete FastAPI service around it. Measured end-to-end through HTTP at 250 ms target latency, `concurrency=32`, no browser:
+
+| offered | achieved | p50 | p99 |
+|---|---|---|---|
+| 40 URLs/s | 39.5/s | 0.36s | 0.40s |
+| 80 URLs/s | 78.8/s | 0.36s | 0.36s |
+
+**Read [docs/deployment.md](docs/deployment.md) before scaling out.** The per-host rate limiter and robots cache live in process memory, so running the fetch pool inside N load-balanced workers lets one target host see N times the rate you configured — politeness degrades silently exactly as you add capacity. That is the argument for deploying it as its own service rather than embedding it in your API workers.
+
 ## JavaScript
 
 `domcontentloaded` is the default on every rendering backend. It fires once the HTML is parsed and synchronous scripts have run, which is enough for client-rendered content, while `load` and `networkidle` also wait on images, fonts, analytics beacons and long-poll connections that may never settle.

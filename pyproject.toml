@@ -1,6 +1,6 @@
 [project]
 name = "polycrawl"
-version = "0.2.1"
+version = "0.3.0"
 description = "Pluggable, high-throughput async web crawler with swappable fetch backends (crawl4ai, crawlee, scrapy)"
 readme = "README.md"
 authors = [
@@ -37,6 +37,8 @@ crawl4ai = ["crawl4ai>=0.9.0"]
 crawlee = ["crawlee[playwright]>=1.0.0"]
 # crawl_async(), the asyncio entry point this backend drives, landed in 2.14.
 scrapy = ["scrapy>=2.14", "scrapy-playwright>=0.0.42"]
+# Only needed to run the FastAPI example; FetchService itself has no web deps.
+service = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 all = [
     "crawl4ai>=0.9.0",
     "crawlee[playwright]>=1.0.0",

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- **`polycrawl.service.FetchService`** — a request/response entry point, for
+  putting polycrawl behind an API. One warm backend per process, callers await
+  their own results, shared robots cache and per-host pacing, per-URL timeouts,
+  retries for transient failures only, and bounded capacity that raises
+  `ServiceBusy` (→ 503) instead of queueing without limit. `CrawlEngine` remains
+  the way to run a crawl; it is the wrong shape for an API request, since it
+  cannot be fed URLs while running, dedups permanently across callers, and
+  carries no correlation id back to the caller.
+- **`examples/fastapi_service.py`** — a complete FastAPI service: lifespan-managed
+  pool, batch `/fetch` with per-URL results, 503 + `Retry-After` when saturated,
+  413 on oversized batches, `/healthz` and `/stats`. Measured end-to-end at 250 ms
+  target latency and `concurrency=32`: 39.5 URLs/s at p99 0.40s, and 78.8 URLs/s
+  at p99 0.36s, both flat.
+- **`docs/deployment.md`** — embedding vs a separate service, with nginx and
+  uvicorn configuration and Little's-law sizing. The per-host limiter and robots
+  cache are per process, so N load-balanced workers let one host see N times the
+  configured rate; that is why a separate service is recommended.
+- **`docs/js-rendering.md`** — rendering is deferred for the service path.
+  Records what was measured (two of three real sites need no browser at all;
+  rendered throughput is 19–35 URLs/s per process against 120–150 without) and the
+  design for routing by evidence rather than by a hand-maintained site list.
+- A `service` extra (`fastapi`, `uvicorn`) for running the example. `FetchService`
+  itself has no web dependencies.
+
 ## 0.2.1
 
 ### Fixed
