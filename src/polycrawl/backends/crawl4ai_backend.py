@@ -258,14 +258,26 @@ class Crawl4AIBackend(CrawlerBackend):
         error_message = getattr(raw, "error_message", None) or None
         final_url = getattr(raw, "redirected_url", None) or getattr(raw, "url", "") or req.url
 
+        html = getattr(raw, "html", "") or ""
+
         if success:
             status = FetchStatus.OK
         elif status_code and status_code >= 400:
             status = FetchStatus.HTTP_ERROR
+        elif status_code and html:
+            # crawl4ai failed the page on its own judgement despite the server
+            # answering cleanly. Its anti-bot heuristic declares *any* page under
+            # 5KB with under 50 visible characters "blocked", which legitimately
+            # thin pages trip -- redirect stubs, empty tag listings, "no results".
+            # The other backends hand those back as ordinary pages, so honouring
+            # this would make the choice of backend change the crawl, and the
+            # verdict is not retryable anyway: a re-fetch returns the same page.
+            # The engine decides what counts as a failure; crawl4ai's reason is
+            # kept in `error` so it stays visible in the output.
+            status = FetchStatus.OK
         else:
             status = _classify(error_message)
 
-        html = getattr(raw, "html", "") or ""
         elapsed = _elapsed_of(raw, started)
 
         return FetchResult(

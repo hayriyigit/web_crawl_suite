@@ -234,7 +234,7 @@ Scrapy's own retry, robots, autothrottle and depth limits are switched off so th
 
 ## Status
 
-133 tests pass (107 unit, 26 integration against real browsers); `ruff check` clean.
+139 tests pass (113 unit, 26 integration against real browsers); `ruff check` clean.
 
 Deliberately not implemented, and reasonable next steps: crawl resume/checkpointing, screenshot capture, `sitemap.xml` seeding, and sinks for destinations other than files.
 

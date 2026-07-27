@@ -14,6 +14,13 @@
 - **crawlee ignored `block_resources` entirely.** It was read from the config and
   never applied, so pages loaded every image and `networkidle` never arrived
   (60s timeout, now 4.0s).
+- **crawl4ai turned thin pages into retryable errors.** Its anti-bot heuristic
+  declares any page under 5KB with under 50 visible characters "blocked by
+  anti-bot protection" even on a clean HTTP 200, which redirect stubs, empty tag
+  listings and "no results" pages all trip — so the same URL was an error on
+  crawl4ai and an ordinary page on the other two, and each one burned
+  `max_retries` futile attempts. A clean response with HTML is now a page; the
+  verdict is preserved in the page's `error` field rather than discarded.
 
 ## 0.2.0
 

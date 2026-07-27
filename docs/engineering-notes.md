@@ -165,6 +165,25 @@ and `networkidle` never arrived (60s timeout, now 4.0s).
   `max_pages_before_recycle` when unset.
 - It produces markdown natively, which is *not* the default output — see below.
 
+### Its anti-bot heuristic fails thin pages
+
+`is_blocked()` runs unconditionally in `AsyncWebCrawler` — there is no setting to
+turn it off — and its tier-3 structural check flags a page when it is under 50KB
+and either scores two signals, or scores one while being under 5KB. "Under 50
+visible characters" is one such signal, so **any page under 5KB with under 50
+characters of text is reported as "Blocked by anti-bot protection"**, on a clean
+HTTP 200 with the HTML present.
+
+Redirect stubs, empty tag listings and "no results" pages all trip it. Two
+consequences: the same URL was an error on crawl4ai and an ordinary page on
+crawlee and scrapy, and because `BACKEND_ERROR` is retryable each one burned
+`max_retries` attempts that could not possibly succeed.
+
+`_to_result` now treats a sub-400 status with non-empty HTML as a page and keeps
+crawl4ai's reason in `error`, so the signal is visible without the backend
+deciding crawl policy. `tests/test_backend_mapping.py` pins this, including that a
+genuine failure — no status, no HTML — is still a failure.
+
 ## Extraction and parity
 
 ### selectolax: `strip_tags`, not `unwrap_tags`
