@@ -29,17 +29,27 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+    env:
+      # Pins the interpreter for *every* uv command, not just the sync. Passing
+      # --python only to `uv sync` left the later `uv run` steps falling back to
+      # uv's default interpreter, which deleted the matrix venv and rebuilt it
+      # on the wrong version with none of the extras -- 141 packages became 26,
+      # so scrapy was simply absent and only the 3.13 leg (the default) passed.
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv sync --extra all --python ${{ matrix.python-version }}
+      - run: uv sync --extra all
+      # `uv run` re-syncs before running, and without --extra it syncs to the
+      # base dependency set. Repeating it on every step keeps the extras
+      # installed no matter what uv decides to do to the environment.
       # examples/ is part of the linted surface locally; leaving it out here let
       # a broken example reach main.
-      - run: uv run ruff check src/ tests/ examples/
-      - run: uv run ruff format --check src/ tests/ examples/
-      - run: uv run pytest -m "not integration" -q
+      - run: uv run --extra all ruff check src/ tests/ examples/
+      - run: uv run --extra all ruff format --check src/ tests/ examples/
+      - run: uv run --extra all pytest -m "not integration" -q
 
   integration:
     # Real browsers against the local test site: one interpreter is enough, and
@@ -53,6 +63,15 @@ jobs:
           enable-cache: true
       - run: uv sync --extra all
 
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
+      # and Chromium's sandbox needs them: without this the browser reports
+      # "Chromium sandboxing failed!", closes immediately, and every rendered
+      # fetch fails with TargetClosedError. Re-enabling them keeps the sandbox
+      # on, which is the point -- passing --no-sandbox instead would make the
+      # suite test a browser configuration nobody should deploy.
+      - name: Allow unprivileged user namespaces (Chromium sandbox)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       # Chromium is ~150 MB and unchanged between runs; keyed on the lockfile so
       # a playwright bump invalidates it.
       - name: Cache Playwright browsers
@@ -64,9 +83,9 @@ jobs:
 
       # --with-deps installs system libraries and is not covered by the cache,
       # so it runs either way; only the browser download is skipped.
-      - run: uv run playwright install chromium --with-deps
+      - run: uv run --extra all playwright install chromium --with-deps
 
-      - run: uv run pytest -m integration -q
+      - run: uv run --extra all pytest -m integration -q
 
   build:
     runs-on: ubuntu-latest
