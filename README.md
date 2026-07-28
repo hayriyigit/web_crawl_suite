@@ -171,6 +171,30 @@ One warm backend per process, callers await their own results, and the state tha
 
 **Read [docs/deployment.md](docs/deployment.md) before scaling out.** The per-host rate limiter and robots cache live in process memory, so running the fetch pool inside N load-balanced workers lets one target host see N times the rate you configured — politeness degrades silently exactly as you add capacity. That is the argument for deploying it as its own service rather than embedding it in your API workers.
 
+### Rendering only where it is needed
+
+Rendering everything costs 6–10× the latency and 3–5 GB per process. Rendering nothing silently loses content on the sites that need it — as an HTTP 200 with no error, which nothing in the metrics disagrees with. `RoutingFetchService` fetches without a browser, judges the result, and escalates only the pages that come back thin:
+
+```python
+from polycrawl import CrawlConfig, RoutingFetchService
+
+routing = RoutingFetchService.from_config(CrawlConfig(backend="scrapy", seeds=[...]))
+await routing.start()                 # no browser launched yet
+pages = await routing.fetch(urls)     # one starts on the first escalation
+print(routing.snapshot()["routing"]["escalation_rate"])
+```
+
+Measured on four real sites with the defaults:
+
+| site | route taken | time |
+|---|---|---|
+| havelsan.com | browserless | 0.28s |
+| doviz.com | browserless | 0.44s |
+| tcmb.gov.tr | escalated (`thin-text:1949`) | 1.14s |
+| mackolik.com | escalated (`low-text-ratio:0.017`) | 2.56s |
+
+Two escalations out of four, by two *different* signals — neither alone catches both. The judgement is pluggable, and `escalation_rate` is what sizes the browser tier: at 20% escalation, 40 URLs/s needs one browser process, not a fleet. See [docs/js-rendering.md](docs/js-rendering.md) for how the thresholds were chosen.
+
 ## JavaScript
 
 `load` is the default on every rendering backend. `--wait-until domcontentloaded` is faster and enough for server-rendered pages, but it fires before any XHR has returned, so on a client-rendered page it yields the shell — and does so as a fast HTTP 200 that looks like a success.

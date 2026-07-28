@@ -1,8 +1,10 @@
-# JavaScript rendering — measurements and a routing design (deferred)
+# JavaScript rendering — measurements and the routing layer
 
-**Status: not implemented.** The service path runs `render: false` — no browser.
-This records what was measured, so the decision can be revisited without redoing
-the work.
+**Status: implemented** as
+[`polycrawl.routing.RoutingFetchService`](../src/polycrawl/routing.py). Every URL
+is fetched without a browser first; only results that come back thin are
+refetched with one. `FetchService` on its own still runs whichever mode you
+configure — the routing is opt-in, and the measurements behind it are below.
 
 ## Why it is deferred
 
@@ -86,7 +88,7 @@ expensive on crawlee. It is also most of why crawlee is the faster renderer. See
 [engineering-notes.md](engineering-notes.md) for the measurements behind
 `block_prefetch` and `blocked_hosts`.
 
-## The routing design, if rendering is added
+## The routing layer
 
 Do not render everything, and do not maintain a hand-written list of sites that
 need it. Route by evidence:
@@ -101,35 +103,78 @@ fetch(url) ──► no-browser fetch  ──► content check ──► good en
                                                          return
 ```
 
-1. **Always try HTTP first.** It costs ~0.25s; on two of three sites it is the
-   whole answer.
-2. **Check whether the result is plausible.** Cheap signals, in rough order of
-   reliability: extracted text length below a floor (~500 chars); a body that is
-   mostly `<script>`; a known SPA root (`<div id="__nuxt">`, `<div id="root">`)
-   with little text; a caller-supplied CSS selector that did not match.
-   crawl4ai's own heuristic — under 5 KB of HTML *and* under 50 visible
-   characters — is a reasonable starting point, though it false-positives on
-   genuinely thin pages, which is why polycrawl no longer treats its verdict as a
-   failure.
-3. **Escalate to a browser pool** only on failure, with `wait_until=load`.
+1. **Always try HTTP first.** It costs ~0.3s; on half the sites measured it is
+   the whole answer.
+2. **Judge the result.** See the thresholds below.
+3. **Escalate to a browser** only when the judgement fails. The browser tier
+   starts lazily, on the first escalation — a deployment that never needs one
+   never launches it.
 4. **Cache the decision per host, with a TTL.** A site that needed rendering an
    hour ago almost certainly still does; skipping step 1 for it saves a round
    trip. Expire it, because sites get rebuilt.
 
-Sizing consequence: the browser tier is small and separate. If 20% of URLs
-escalate, 40 URLs/s means ~8/s rendered — one process, not a fleet.
+```python
+from polycrawl import CrawlConfig, RoutingFetchService
 
-### What implementing it would take
+routing = RoutingFetchService.from_config(CrawlConfig(backend="scrapy", seeds=[...]))
+await routing.start()                  # no browser yet
+pages = await routing.fetch(urls)
+print(routing.snapshot()["routing"]["escalation_rate"])
+await routing.close()
+```
 
-- A `RoutingFetchService` wrapping two `FetchService` instances (one `render:
-  false`, one rendering), with the content check and the per-host TTL cache.
-- A pluggable `sufficient(page) -> bool` predicate, since "good enough" is
-  caller-specific — a price scraper and a text indexer disagree.
-- Metrics for the escalation rate, which is the number that tells you whether the
-  browser tier is sized right.
-- Tests: a fixture site with a JS-only page and a server-rendered one (the
-  existing test site already serves both — `/page/N` and `/static/N`), asserting
-  the JS-only page escalates and the static one does not.
+Both tiers share one rate limiter and one robots cache. Two `FetchService`
+instances with their own would let a host see twice the configured rate — the
+defect [deployment.md](deployment.md) warns about across processes, reintroduced
+inside one.
+
+### Choosing the thresholds
+
+No single signal works. Measured on four real sites, plain fetch:
+
+| site | needs a browser? | text | text/html | script % | rendered gain |
+|---|---|---|---|---|---|
+| tcmb.gov.tr/…/bugun | **yes** | 1,949 | 0.062 | 18.5% | 2.32× |
+| mackolik.com | **yes** | 5,222 | **0.017** | 82.9% | 3.70× |
+| havelsan.com | no | 4,613 | 0.054 | 30.7% | 1.00× |
+| doviz.com | no | 18,188 | 0.057 | 7.6% | 1.01× |
+
+- A **text floor** catches tcmb (1,949 is the lowest) but not mackolik, whose
+  5,222 characters of navigation exceed havelsan's real content.
+- A **text-to-HTML ratio** catches mackolik (0.017) but not tcmb — whose 0.062 is
+  *higher* than either site needing no browser.
+- **Script share** is useless here: havelsan needs no browser at 30.7%, tcmb does
+  at 18.5%.
+
+So `ContentCheck` combines the first two with OR — `min_text=2500`,
+`min_text_ratio=0.03` — which classifies all four correctly. Four sites is a small
+sample and those numbers are fitted to it; treat them as a starting point.
+
+`require_marker` is the reliable option when the caller knows what it wants. It
+matches **extracted text, never HTML**, and that distinction is load-bearing: the
+marker for JS-built content is usually already in the raw HTML, sitting inside the
+script that has not run yet. Matching HTML would report success on exactly the
+page that needs a browser. Any callable works too, so a price scraper and a text
+indexer can disagree about "good enough".
+
+### Sizing consequence
+
+The browser tier is small. If 20% of URLs escalate, 40 URLs/s means ~8/s
+rendered — one process, not a fleet. `escalation_rate` in `snapshot()` is the
+number that tells you whether it is sized right; watch `escalation_failed` and
+`rendered_not_better` alongside it.
+
+Measured end to end, defaults, four real sites:
+
+| site | route taken | time |
+|---|---|---|
+| havelsan | plain | 0.28s |
+| doviz | plain | 0.44s |
+| tcmb | escalated (`thin-text:1949`) | 1.14s |
+| mackolik | escalated (`low-text-ratio:0.017`) | 2.56s |
+
+Escalation rate 0.5 on that mix, and the tcmb page comes back with the exchange
+rate table that a browserless fetch silently omits.
 
 ## Reproducing any of this
 

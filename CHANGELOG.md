@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- **`polycrawl.routing.RoutingFetchService`** — fetch without a browser, escalate
+  to one only where the result comes back thin. The browser tier starts lazily on
+  the first escalation, so a deployment that never needs one never launches it,
+  and `snapshot()["routing"]["escalation_rate"]` is what sizes it. Measured on
+  four real sites: havelsan 0.28s and doviz 0.44s served browserless, tcmb and
+  mackolik escalated (1.14s / 2.56s), escalation rate 0.5.
+- **`ContentCheck`**, the default judgement, and `Verdict`. Any callable works,
+  because "good enough" is caller-specific.
+
+### Notes
+
+- **No single signal separates the sites that need a browser from those that do
+  not.** A text floor catches tcmb (1,949 chars) but not mackolik, whose 5,222
+  characters of navigation exceed havelsan's real content. A text-to-HTML ratio
+  catches mackolik (0.017) but not tcmb, whose 0.062 is *higher* than either site
+  needing no browser. Script share is useless in both directions. `ContentCheck`
+  therefore ORs the first two (`min_text=2500`, `min_text_ratio=0.03`), which
+  classifies all four correctly — on a four-site sample, so treat them as a
+  starting point.
+- **`require_marker` matches extracted text, never HTML.** The marker for content
+  that JavaScript builds is usually already present in the raw HTML, inside the
+  script that has not run yet, so matching HTML reports success on precisely the
+  page that needs a browser. The integration test caught this.
+- Both tiers **share one rate limiter and one robots cache**. Two `FetchService`
+  instances with their own would let a host see twice the configured rate — the
+  defect `docs/deployment.md` warns about across processes, reintroduced inside
+  one process.
+- A rendered result that has *less* text than the browserless one is discarded.
+  Browsers fail in ways that still produce a page — a consent wall, a timeout
+  mid-load — and returning less than the free attempt already got is a
+  regression, not an escalation.
+
 ## 0.4.0
 
 ### Changed

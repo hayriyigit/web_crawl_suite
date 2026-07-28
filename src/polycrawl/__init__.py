@@ -28,15 +28,17 @@ from .engine import CrawlEngine, crawl
 from .metrics import Metrics
 from .models import CrawledPage, FetchRequest, FetchResult, FetchStatus
 from .registry import BackendInfo, get_backend, list_backends, register
+from .routing import ContentCheck, RoutingFetchService, Verdict
 from .service import FetchService, ServiceBusy, ServiceStats
 from .sinks import JsonlSink, MemorySink, NullSink, Sink
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "BackendCapabilities",
     "BackendInfo",
     "BrowserSettings",
+    "ContentCheck",
     "CrawlConfig",
     "CrawlEngine",
     "CrawledPage",
@@ -51,9 +53,11 @@ __all__ = [
     "NullSink",
     "OutputSettings",
     "PolitenessSettings",
+    "RoutingFetchService",
     "ServiceBusy",
     "ServiceStats",
     "Sink",
+    "Verdict",
     "__version__",
     "crawl",
     "get_backend",
