@@ -53,6 +53,10 @@ CRAWL_PER_HOST_RPS=1 uvicorn app:app --workers 4
 That is a workaround, not a fix: it wastes capacity when workers are unevenly
 loaded, and it silently breaks again the day someone changes `--workers`.
 
+The same reasoning applies to running the whole app in N containers, which is the
+usual shape in practice — see
+[N replicas in Docker behind nginx](#n-replicas-in-docker-behind-nginx).
+
 ## Topology
 
 ```
@@ -121,6 +125,119 @@ uv sync --extra scrapy --extra service
 CRAWL_CONCURRENCY=32 CRAWL_PER_HOST_RPS=4 \
   uvicorn examples.fastapi_service:app --host 0.0.0.0 --port 8080 --workers 1
 ```
+
+## N replicas in Docker behind nginx
+
+The common plan is to skip the split above and run the whole FastAPI app —
+polycrawl embedded — in four containers with nginx in front. That works. Two
+things decide whether it works *well*.
+
+### It is not what buys you throughput
+
+One process already handles more than the usual target. Measured end to end (see
+[Sizing](#sizing)): **39.5 URLs/s at p99 0.40s**, and **78.8 URLs/s at p99 0.36s**
+with latency still flat. And the box is not CPU-bound — at concurrency 32 the
+crawl used **13% of 12 cores**, and taking it down to 6 cores changed the wall
+time not at all:
+
+| cores | wall | CPU utilisation |
+|---|---|---|
+| 12 | 3.75s | 13% |
+| 6 | 3.75s | 28% |
+| 3 | 4.06s | 45% |
+
+So replicas are worth running for **resilience, rolling deploys and isolation**,
+not for speed. Expect no throughput change from the second container, and size
+the rest of the stack accordingly. (This is also why a faster browser build —
+Thorium and friends — buys nothing: there is no CPU shortage to relieve.)
+
+### Every replica is a separate politeness authority
+
+This is the part that bites. `HostLimiter` and `RobotsCache` are per
+`FetchService`, so four containers are four independent limiters that never see
+each other. Configure `per_host_rps: 4` and a popular target actually receives
+**4 × 4 = 16 requests/s**, plus 16 concurrent connections and four separate
+`robots.txt` fetches.
+
+The failure mode is not a crash. It is that the sites you depend on start rate
+limiting or blocking you, and nothing in your own metrics says why. It is most
+likely exactly where you would least like it: several users searching the same
+popular site at once, their requests landing on different containers.
+
+**Divide the per-host budget by the replica count**, and treat that as part of
+the replica count itself:
+
+```yaml
+# docker-compose.yml -- identical for all four services
+environment:
+  CRAWL_PER_HOST_RPS: "1"            # 4 replicas × 1 = 4/s per host overall
+  CRAWL_PER_HOST_CONCURRENCY: "1"    # 4 replicas × 1 = 4 concurrent
+  CRAWL_CONCURRENCY: "16"            # per container; 64 in total
+  CRAWL_BACKEND: "scrapy"
+```
+
+Scaling to eight containers without halving these again doubles the load you put
+on every target. Put the arithmetic in a comment next to `replicas:`, because
+nothing enforces it. Sharding by target host (consistent hashing on the URL's
+host, so one host is always served by the same replica) is the version that
+survives a replica-count change; divide-by-N is the version you can ship today.
+
+### nginx for this topology
+
+```nginx
+upstream crawl {
+    least_conn;                 # not round-robin: see below
+    server crawl1:8000;
+    server crawl2:8000;
+    server crawl3:8000;
+    server crawl4:8000;
+}
+
+location /fetch {
+    proxy_pass http://crawl;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+
+    proxy_read_timeout 30s;     # must exceed CRAWL_REQUEST_TIMEOUT (20s)
+    proxy_next_upstream error timeout;   # deliberately no http_503
+}
+```
+
+`least_conn` rather than round-robin because request cost varies by more than an
+order of magnitude here: `/fetch` takes anything from one URL to
+`CRAWL_MAX_URLS_PER_REQUEST` of them. Round-robin counts those as equal and piles
+work onto a container that is already busy.
+
+Leaving `http_503` out of `proxy_next_upstream` is deliberate too. A 503 from
+this service means *the pool is full* — retrying it against another replica does
+not find spare capacity, it just multiplies load on a system that is already
+saying stop. Let the 503 and its `Retry-After` reach the client.
+
+### Docker specifics
+
+- **One uvicorn worker per container** (`--workers 1`). Workers inside a process
+  each build their own `FetchService`, which is the same duplicated-limiter
+  problem one level further down, where you are less likely to look for it.
+- **Memory, without a browser:** ~300–400 MB per container. Four is comfortable.
+- **Memory, with rendering:** 3–5 GB *per container* for Chromium. Four replicas
+  is 12–20 GB and will not fit on a 16 GB box. If you enable rendering, make the
+  browser tier separate and smaller rather than multiplying it by the API replica
+  count — see [js-rendering.md](js-rendering.md).
+- **`shm_size` is required if you render.** Docker's default 64 MB `/dev/shm` is
+  not enough for Chromium and produces random tab crashes that look like flaky
+  sites:
+  ```yaml
+  shm_size: 1gb
+  ```
+- **Health checks:** `/healthz` answers 503 only while the service is not
+  `ready`, which is what a container healthcheck wants — a replica still warming
+  up should not receive traffic. Saturation is reported in the body
+  (`"saturated": true`) but **still returns 200**, so a plain HTTP healthcheck
+  will not route away from a full replica. That is intentional: a saturated
+  worker is working, not broken, and taking it out of rotation would move its
+  load onto replicas that are equally full. If you do want a balancer to avoid
+  full replicas, read the body rather than the status code — `least_conn` above
+  already approximates it.
 
 ## Sizing
 
