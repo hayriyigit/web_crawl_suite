@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 from collections.abc import Sequence
 from typing import ClassVar
 
@@ -12,6 +14,26 @@ from polycrawl import CrawlConfig, CrawlEngine, MemorySink
 from polycrawl.backend import BackendCapabilities, CrawlerBackend, EmitFn
 from polycrawl.models import FetchRequest, FetchResult, FetchStatus
 from polycrawl.registry import get_backend, list_backends, register
+
+
+def _run_probe(code: str) -> str:
+    """Run *code* in a fresh interpreter and return its stdout.
+
+    These tests are about what a *clean process* does at import time, so they
+    cannot run in-process. ``check=True`` is deliberately not used: it raises a
+    CalledProcessError whose message is the command line and an exit status,
+    discarding the traceback that says what actually went wrong. That turns any
+    failure here -- especially one that only happens on CI -- into a puzzle. The
+    child's stderr is the whole diagnosis, so it goes into the assertion.
+    """
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert proc.returncode == 0, (
+        f"probe exited {proc.returncode}\n"
+        f"--- code ---\n{code}\n"
+        f"--- stdout ---\n{proc.stdout}\n"
+        f"--- stderr ---\n{proc.stderr}"
+    )
+    return proc.stdout.strip()
 
 
 class TestDiscovery:
@@ -36,18 +58,12 @@ class TestDiscovery:
 
     def test_importing_the_registry_does_not_import_backends(self) -> None:
         """Discovery must stay cheap even with heavy optional dependencies."""
-        import subprocess
-        import sys
-
         code = (
             "import sys; import polycrawl.registry as r; r.list_backends;"
             "print('crawl4ai' in sys.modules, 'playwright' in sys.modules,"
             " 'scrapy' in sys.modules, 'twisted' in sys.modules)"
         )
-        out = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, check=True
-        )
-        assert out.stdout.strip() == "False False False False"
+        assert _run_probe(code) == "False False False False"
 
     def test_importing_the_scrapy_backend_installs_no_reactor(self) -> None:
         """Importing a module must not mutate process-global Twisted state.
@@ -56,18 +72,14 @@ class TestDiscovery:
         backend that installed one at import time would decide it for the whole
         host application.
         """
-        import subprocess
-        import sys
+        pytest.importorskip("scrapy", reason="the scrapy extra is not installed")
 
         code = (
             "import polycrawl.backends.scrapy_backend as b;"
             "from scrapy.utils.reactor import is_reactor_installed;"
             "print(is_reactor_installed(), b.ScrapyBackend.name)"
         )
-        out = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, check=True
-        )
-        assert out.stdout.strip() == "False scrapy"
+        assert _run_probe(code) == "False scrapy"
 
 
 class TestThirdPartyBackend:

@@ -6,11 +6,25 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to the same branch makes the previous run pointless, and the
+# integration job holds a runner for minutes while it drives real browsers.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Fail if uv.lock does not match pyproject.toml instead of quietly resolving
+  # something else. Without this, CI can run different versions from every
+  # developer machine, and the difference only shows up as a test that fails in
+  # one place and passes in the other.
+  UV_FROZEN: "1"
+
 jobs:
   lint-and-unit:
     # The unit suite needs no browser, so it stays fast enough to run on every
     # supported interpreter.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -21,25 +35,42 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --extra all --python ${{ matrix.python-version }}
-      - run: uv run ruff check src/ tests/
-      - run: uv run ruff format --check src/ tests/
+      # examples/ is part of the linted surface locally; leaving it out here let
+      # a broken example reach main.
+      - run: uv run ruff check src/ tests/ examples/
+      - run: uv run ruff format --check src/ tests/ examples/
       - run: uv run pytest -m "not integration" -q
 
   integration:
     # Real browsers against the local test site: one interpreter is enough, and
     # this is what proves the backends actually render and agree with each other.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
       - run: uv sync --extra all
+
+      # Chromium is ~150 MB and unchanged between runs; keyed on the lockfile so
+      # a playwright bump invalidates it.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
+      # --with-deps installs system libraries and is not covered by the cache,
+      # so it runs either way; only the browser download is skipped.
       - run: uv run playwright install chromium --with-deps
+
       - run: uv run pytest -m integration -q
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
