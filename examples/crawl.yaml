@@ -51,17 +51,33 @@ politeness:
 
 # -- browser (ignored when the backend does not render) -----------------------
 browser:
-  # domcontentloaded fires once the HTML is parsed and sync scripts have run.
-  # load and networkidle also wait on images, fonts and analytics beacons.
-  wait_until: domcontentloaded
+  # load waits for subresources; domcontentloaded fires once the HTML is parsed,
+  # which is before any XHR has returned -- on a client-rendered page that gives
+  # you the shell, as a fast 200 that looks like a success. Use it only for
+  # server-rendered targets, where it is faster and sufficient.
+  wait_until: load
   page_timeout_ms: 30000
   # For frameworks that hydrate a tick after DOM ready.
   settle_ms: 0
   wait_for_selector: null
   # Blocking images, media and fonts is the largest single throughput win for
-  # text crawling -- typically 60-80% fewer bytes moved.
+  # text crawling -- typically 60-80% fewer bytes moved. It uses Chromium launch
+  # flags, so it costs nothing.
   block_resources: true
   blocked_resource_types: [image, media, font]
+  # The two below need a Playwright route, and registering a route -- whatever it
+  # matches -- disables the browser's HTTP cache for the whole context, so shared
+  # bundles are refetched per page (1.63x slower measured). Free on the scrapy
+  # backend, which forfeits its cache anyway. Enable deliberately.
+  #
+  # Drops <link rel="prefetch"> and framework route prefetching. Roughly halves
+  # the HTML load you put on a prefetching site, and does not make you faster.
+  block_prefetch: false
+  # Aborted by host, including subdomains. For analytics and tag managers.
+  blocked_hosts: []
+  # Reports requests, bytes and cache hit rate by resource type. Passive
+  # listeners only, so unlike the two above this is free to leave on.
+  trace_resources: false
 
 # -- output -------------------------------------------------------------------
 output:

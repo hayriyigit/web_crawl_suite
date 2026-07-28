@@ -45,19 +45,26 @@ point and extra capacity means extra processes.
 
 ## Settings that matter, if this is revisited
 
-**Wait strategy.** `domcontentloaded` is the default and returns the *shell* on an
-XHR-driven page — mackolik gave 5.3 KB with none of the scores, and looked like a
-fast success. Measured cost of getting the real content:
+**Wait strategy.** `load` is the default. `domcontentloaded` returns the *shell*
+on an XHR-driven page — mackolik gave 5.3 KB with none of the scores, as a fast
+HTTP 200 that looks like a success and is invisible in the metrics. Measured cost
+of getting the real content:
 
 | strategy | mackolik | scores present |
 |---|---|---|
-| `domcontentloaded` | 1.21s | **no** |
-| `--wait-until load` | **2.74s** | yes |
+| `--wait-until domcontentloaded` | 1.21s | **no** |
+| `load` (default) | **2.74s** | yes |
 | `--settle-ms 2000` | 3.04s | yes |
 | `--wait-until networkidle` | 3.98s | yes |
 
 `load` was both fastest and complete here. `networkidle` is the most patient and
 the most fragile — it never arrives on a page that polls.
+
+This is backend-independent. All three produce byte-identical output at a given
+wait strategy — 5,430 characters and 0 scorelines on `domcontentloaded`, 19,179
+and 136 on `load` — so a backend that seems not to render is nearly always this
+setting. Use `--wait-until domcontentloaded` for server-rendered targets, where
+it is both faster and sufficient.
 
 **Resource blocking must use launch flags, not request interception.** Blocking
 with `PLAYWRIGHT_ABORT_REQUEST` routes every request through Python *and* is
@@ -70,6 +77,14 @@ now do this; see [engineering-notes.md](engineering-notes.md).
 CSS has no flag equivalent and needs interception, which only the scrapy backend
 implements. It saves little (0–14% measured) and risks content: JS that measures
 layout can render less without stylesheets. Not worth it by default.
+
+**Anything beyond images and fonts costs the HTTP cache.** Registering a route at
+all — whatever it matches — disables Chromium's cache for the browser context,
+which is 1.63× end to end because shared bundles stop being reused. That is free
+on scrapy (scrapy-playwright always routes, so its cache is already gone) and
+expensive on crawlee. It is also most of why crawlee is the faster renderer. See
+[engineering-notes.md](engineering-notes.md) for the measurements behind
+`block_prefetch` and `blocked_hosts`.
 
 ## The routing design, if rendering is added
 

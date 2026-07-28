@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..backend import BackendCapabilities, CrawlerBackend, EmitFn
 from ..models import FetchRequest, FetchResult, FetchStatus
+from ..resources import BlockPolicy, ResourceTrace, attach_trace
 
 if TYPE_CHECKING:
     from ..config import CrawlConfig
@@ -160,6 +161,7 @@ class ScrapyBackend(CrawlerBackend):
         self._idle.set()
         self._closed = False
         self._render = bool(config.backend_options.get("render", True))
+        self._trace = ResourceTrace() if (config.browser.trace_resources and self._render) else None
 
     @classmethod
     def is_available(cls) -> tuple[bool, str]:
@@ -307,14 +309,21 @@ class ScrapyBackend(CrawlerBackend):
             "PLAYWRIGHT_MAX_PAGES_PER_CONTEXT": max(1, cfg.concurrency),
             "PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT": b.page_timeout_ms,
         }
-        if blocked:
-            # Whatever the flags could not express. The predicate is consulted for
-            # every request whatever its type, so it is wired up only when
-            # something is genuinely left to block.
-            remaining = frozenset(blocked)
+        # Whatever the flags could not express, plus the opt-in blocking. Unlike
+        # crawlee there is no cache to protect here: scrapy-playwright installs
+        # `page.route("**")` unconditionally and finishes every request with
+        # `route.continue_()`, which re-issues from the network. Shared bundles
+        # are therefore refetched per page whatever we do, so an extra predicate
+        # is free -- see polycrawl.resources for the measurements.
+        policy = BlockPolicy.from_settings(b, leftover_types=frozenset(blocked))
+        if policy.needed:
 
             def abort(request: Any) -> bool:
-                return request.resource_type in remaining
+                # `all_headers()` is async; `headers` is the sync snapshot and
+                # carries Purpose/Sec-Purpose, which is all the policy needs.
+                return policy.should_block(
+                    request.url, request.resource_type, dict(request.headers or {})
+                )
 
             settings["PLAYWRIGHT_ABORT_REQUEST"] = abort
         return settings
@@ -340,6 +349,19 @@ class ScrapyBackend(CrawlerBackend):
                 self._decrement()
             raise
 
+    @property
+    def resource_trace(self) -> ResourceTrace | None:
+        """What the browser fetched, when ``browser.trace_resources`` is on."""
+        return self._trace
+
+    async def _trace_page(self, page: Any, _request: Any) -> None:
+        """Attach passive request/response counters to a freshly created page."""
+        trace = self._trace
+        if trace is None:  # pragma: no cover - only wired when tracing
+            return
+        trace.record_page()
+        await attach_trace(page, trace)
+
     def _to_scrapy(self, req: FetchRequest) -> Any:
         import scrapy
 
@@ -359,6 +381,9 @@ class ScrapyBackend(CrawlerBackend):
         if self._render:
             meta["playwright"] = True
             meta["playwright_page_goto_kwargs"] = {"wait_until": b.wait_until}
+            if self._trace is not None:
+                # scrapy-playwright runs this once per page, before navigation.
+                meta["playwright_page_init_callback"] = self._trace_page
             methods = []
             if b.wait_for_selector:
                 from scrapy_playwright.page import PageMethod
@@ -409,6 +434,8 @@ class ScrapyBackend(CrawlerBackend):
             self._reactor_call(task.cancel)
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 await self._await_reactor_task(task)
+        if self._trace is not None and self._trace.total_requests:
+            log.info("%s", self._trace.summary())
 
     # -- results ----------------------------------------------------------
 

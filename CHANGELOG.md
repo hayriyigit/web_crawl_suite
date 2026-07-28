@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.4.0
+
+### Changed
+
+- **`browser.wait_until` now defaults to `load`** (was `domcontentloaded`).
+  `domcontentloaded` fires before any XHR has returned, so on a client-rendered
+  page it captured the shell — nav and footer, no content — and returned it as a
+  fast HTTP 200 with nothing in the metrics to indicate a problem. Measured on a
+  live-scores SPA: `domcontentloaded` 1.21s and **0** of the scores, `load` 2.74s
+  and all 136, `networkidle` 3.98s and all of them. The wait strategy, not the
+  backend, is what decides this: all three backends produce byte-identical output
+  at a given setting. Pass `--wait-until domcontentloaded` for server-rendered
+  targets, where it is both faster and sufficient.
+
+### Added
+
+- **`browser.block_prefetch`** (`--block-prefetch`) drops speculative
+  navigations, identified by Chromium's own `Purpose: prefetch` header rather
+  than by guesswork. A single `<link rel="prefetch">` per page doubles the HTML a
+  site serves us (8 pages → 16 requests); a Next.js-like page with 20 prefetch
+  links took a fixture from 56 to 105 requests over 18 pages.
+  **This is a courtesy to the origin, not a speed feature** — measured wall time
+  is unchanged (2.92s → 2.99s), because prefetch is issued at lowest priority
+  after the page has already resolved. No Chromium flag suppresses it;
+  `Prerender2`, `NetworkPrediction`, `SpeculationRules` and
+  `--disable-background-networking` were all measured with no effect.
+- **`browser.blocked_hosts`** (`--block-host`, repeatable) aborts requests to a
+  host and its subdomains, for analytics and tag managers. Matching is by host,
+  never by method: POST looks like a clean "beacon" signal and is not, since
+  GraphQL content APIs are POSTs.
+- **`browser.trace_resources`** (`--trace-resources`) reports requests, bytes and
+  cache hit rate by resource type at the end of a crawl. Passive listeners plus
+  CDP, neither of which perturbs the cache, so it is free to leave on. Both the
+  prefetch storm and the cache loss below are invisible in crawl output; this is
+  how you see them.
+- `polycrawl.resources` (`BlockPolicy`, `ResourceTrace`, `attach_trace`), shared
+  by both browser backends.
+- The test site serves `/res/N` — prefetch links, a shared cacheable stylesheet
+  and a cross-host beacon — and counts requests, so these properties are asserted
+  from the server's side rather than inferred.
+
+### Notes
+
+- **Both blocking options are off by default because they are not free.**
+  Registering a Playwright route disables Chromium's HTTP cache for the entire
+  browser context, so shared bundles are refetched on every page: **1.63× slower**
+  end to end (2.91s → 4.76s over 18 pages at 150 ms latency). This is not about
+  what the handler does — `continue_()`, `fallback()`, and a pattern matching *no
+  URL at all* are equally destructive. The crawlee backend logs a warning when
+  either option is enabled.
+- The same effect explains a gap that 0.2.0 recorded without a cause: **crawlee
+  is 1.93× faster than scrapy** on the same workload (2.91s vs 5.62s).
+  scrapy-playwright installs `page.route("**")` unconditionally and ends every
+  request with `route.continue_()`, so it can never reuse a cached bundle —
+  scrapy measures identically whether assets are cacheable or not (5.62s / 5.64s),
+  where crawlee fetches a shared stylesheet once for six pages instead of six
+  times. **Use crawlee when rendering.**
+
 ## 0.3.0
 
 ### Added

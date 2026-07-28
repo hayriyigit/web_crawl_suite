@@ -158,6 +158,85 @@ The same defect had a quieter form in the crawlee backend: `block_resources` was
 accepted from the config and then *silently ignored*, so pages loaded every image
 and `networkidle` never arrived (60s timeout, now 4.0s).
 
+### Registering *any* route disables the browser's HTTP cache
+
+The reason interception is expensive turned out to be much larger than the
+per-request Python hop. Measured with a fixture that counts requests server-side,
+six pages sharing one `max-age=3600` stylesheet:
+
+| handler | origin served the CSS |
+|---|---|
+| no route | **1×** |
+| `route → continue_()` | 6× |
+| `route → fallback()` | 6× |
+| route whose pattern matches **nothing** | 6× |
+
+The last row is the finding. It is not about what the handler does or which URLs
+it matches — merely *registering* a route on a browser context turns off
+Chromium's HTTP cache for that whole context, so every shared bundle is refetched
+on every page. End to end at 150 ms latency over 18 pages: **2.91s → 4.76s,
+1.63×**.
+
+Two consequences shape the design in `polycrawl/resources.py`:
+
+- Blocking that a launch flag cannot express is **opt-in** (`block_prefetch`,
+  `blocked_hosts`), and `BlockPolicy.needed` exists so a default crawl never has
+  a route installed.
+- It is free on the scrapy backend and costly on crawlee, because
+  scrapy-playwright installs `page.route("**")` unconditionally
+  ([`handler.py`][sp-route]) and ends every request with `route.continue_()`.
+  Its cache is already forfeit — which is most of why crawlee is 1.93× faster on
+  the same workload (2.91s vs 5.62s) and why scrapy measures identically whether
+  the assets are cacheable or not (5.62s / 5.64s).
+
+[sp-route]: https://github.com/scrapy-plugins/scrapy-playwright
+
+### Observation is free; CDP reports cache disposition, `server_addr` does not
+
+`page.on("request")` / `page.on("response")` listeners do **not** disturb the
+cache (verified against the same fixture: still 1 CSS fetch for 6 pages), so
+`trace_resources` is safe to leave on. But those events count what the *page
+asked for*, including requests answered from cache — the trace reported 6
+stylesheet requests where the origin served 1, which would hide exactly the
+regression above.
+
+Getting the true disposition needs CDP, and the obvious signals do not work:
+`response.server_addr()` returns the original address for cache hits too, and
+`timing.connectStart` is `-1` for any reused connection. What works is
+`Network.responseReceived` with `fromDiskCache`, plus
+`Network.requestServedFromCache` for the memory tier. A request can appear in
+both, so disposition is resolved once per `requestId`.
+
+Two traps when wiring it up, both of which fail silently as "0 cache hits":
+
+- The `CDPSession` must be kept alive. It was a local in `attach_trace`, so
+  Python collected it and took its listeners with it.
+- Handling only `requestServedFromCache` misses disk-cache hits entirely — those
+  arrive as `responseReceived(fromDiskCache=True)` and must be counted there.
+
+### Speculative prefetch is a cost to the origin, not to us
+
+`<link rel="prefetch">` roughly doubles the HTML a site serves a rendering
+crawler: 8 real navigations produced 16 HTML requests, and a Next.js-like page
+with 20 prefetch links took a fixture from 56 to 105 requests over 18 pages. None
+of it costs us wall time — 2.92s → 2.99s — because prefetch is issued at lowest
+priority *after* the page has resolved, by which point the crawler has extracted
+its text and moved on. The same holds for analytics beacons (2.96s → 2.94s with
+the beacon removed).
+
+So `block_prefetch` is a courtesy feature, and is documented as one. No Chromium
+flag suppresses prefetch — `Prerender2`, `NetworkPrediction`, `SpeculationRules`
+and `--disable-background-networking` were all measured with no effect — so it
+needs a route, which is what makes it cost the cache on crawlee.
+
+The requests do self-identify: Chromium sends `Purpose: prefetch` (and
+`Sec-Purpose` for the Speculation Rules API), which is the page declaring the
+request is not needed yet. That makes the rule exact rather than heuristic.
+
+Blocking analytics is done by **host**, never by method. POST looks like a clean
+signal for "beacon" and is not: GraphQL content APIs are POSTs, and the test
+fixture's own body text arrives over an XHR.
+
 ## crawl4ai
 
 - `BrowserConfig(user_agent=None)` crashes: it derives client hints and regexes

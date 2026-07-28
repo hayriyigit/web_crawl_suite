@@ -29,6 +29,7 @@ from uuid import uuid4
 
 from ..backend import BackendCapabilities, CrawlerBackend, EmitFn
 from ..models import FetchRequest, FetchResult, FetchStatus
+from ..resources import BlockPolicy, ResourceTrace, attach_trace
 
 if TYPE_CHECKING:
     from ..config import CrawlConfig
@@ -65,6 +66,8 @@ class CrawleeBackend(CrawlerBackend):
         self._idle = asyncio.Event()
         self._idle.set()
         self._closed = False
+        self._policy = BlockPolicy.from_settings(config.browser)
+        self._trace = ResourceTrace() if config.browser.trace_resources else None
         #: key -> (our request, submit time). Crawlee only round-trips
         #: ``user_data``, so this is how depth/attempt/parent come back. The
         #: timestamp is taken at submit because crawlee navigates *before*
@@ -161,6 +164,18 @@ class CrawleeBackend(CrawlerBackend):
         self._run_task = asyncio.create_task(self._run_forever(), name="crawlee-run")
         await self._await_ready()
         log.debug("crawlee backend started (concurrency=%d)", cfg.concurrency)
+        if self._policy.needed:
+            # Worth saying out loud: this is the one setting here that trades our
+            # throughput for someone else's bandwidth, and the cost is invisible
+            # otherwise -- pages just get slower.
+            log.warning(
+                "request blocking is on (prefetch=%s, hosts=%d, types=%d), which installs a "
+                "Playwright route and so disables the browser HTTP cache; shared bundles are "
+                "refetched per page (measured 1.63x slower end to end)",
+                self._policy.prefetch,
+                len(self._policy.hosts),
+                len(self._policy.resource_types),
+            )
 
     async def _await_ready(self) -> None:
         """Give the crawler a moment to come up, and surface immediate failures."""
@@ -193,6 +208,46 @@ class CrawleeBackend(CrawlerBackend):
         @crawler.failed_request_handler
         async def _failed(context: Any, error: Exception) -> None:
             await self._on_failure(context, error)
+
+        if self._policy.needed or self._trace is not None:
+
+            @crawler.pre_navigation_hook
+            async def _prepare(context: Any) -> None:
+                await self._prepare_page(context.page)
+
+    @property
+    def resource_trace(self) -> ResourceTrace | None:
+        """What the browser fetched, when ``browser.trace_resources`` is on."""
+        return self._trace
+
+    async def _prepare_page(self, page: Any) -> None:
+        """Attach blocking and/or tracing to a page before it navigates."""
+        trace = self._trace
+        if trace is not None:
+            await attach_trace(page, trace)
+
+        if not self._policy.needed:
+            return
+
+        policy = self._policy
+
+        async def _route(route: Any) -> None:
+            request = route.request
+            try:
+                headers = await request.all_headers()
+            except Exception:  # the request can vanish mid-flight
+                headers = {}
+            reason = policy.block_reason(request.url, request.resource_type, headers)
+            if reason is not None:
+                if trace is not None:
+                    trace.record_blocked(reason)
+                with contextlib.suppress(Exception):
+                    await route.abort()
+                return
+            with contextlib.suppress(Exception):
+                await route.fallback()
+
+        await page.route("**", _route)
 
     # -- submission -------------------------------------------------------
 
@@ -256,6 +311,8 @@ class CrawleeBackend(CrawlerBackend):
         # crawl's requests unless they are dropped here.
         await self._drop_storages()
         self._inflight.clear()
+        if self._trace is not None and self._trace.total_requests:
+            log.info("%s", self._trace.summary())
 
     async def _drop_storages(self) -> None:
         queue, self._request_queue = self._request_queue, None
@@ -274,6 +331,8 @@ class CrawleeBackend(CrawlerBackend):
         if taken is None:
             return
         req, started = taken
+        if self._trace is not None:
+            self._trace.record_page()
         try:
             page = context.page
             b = self.config.browser

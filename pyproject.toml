@@ -1,6 +1,6 @@
 [project]
 name = "polycrawl"
-version = "0.3.0"
+version = "0.4.0"
 description = "Pluggable, high-throughput async web crawler with swappable fetch backends (crawl4ai, crawlee, scrapy)"
 readme = "README.md"
 authors = [

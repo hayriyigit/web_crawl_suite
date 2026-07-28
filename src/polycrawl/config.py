@@ -25,11 +25,16 @@ class BrowserSettings(BaseModel):
 
     headless: bool = True
     browser_type: Literal["chromium", "firefox", "webkit"] = "chromium"
-    #: ``domcontentloaded`` is the default deliberately: it fires once the HTML
-    #: is parsed and synchronous scripts have run, which is enough for
-    #: client-rendered content, while ``load``/``networkidle`` wait on images,
-    #: fonts, analytics beacons and long-poll connections that never settle.
-    wait_until: WaitUntil = "domcontentloaded"
+    #: ``load`` is the default because ``domcontentloaded`` fires before any XHR
+    #: has returned, so on a client-rendered page it yields the shell -- nav and
+    #: footer, no content -- as a fast HTTP 200 that looks like a success and is
+    #: not detectable from the metrics. Measured on a live-scores SPA:
+    #: ``domcontentloaded`` 1.21s and 0 of the scores, ``load`` 2.74s and all of
+    #: them, ``networkidle`` 3.98s and all of them. ``load`` waits for images and
+    #: fonts, which is cheap here because :attr:`block_resources` stops them
+    #: being requested at all. Set ``domcontentloaded`` when crawling
+    #: server-rendered pages, where it is both faster and sufficient.
+    wait_until: WaitUntil = "load"
     #: Hard cap per navigation, milliseconds.
     page_timeout_ms: int = Field(30_000, ge=1_000)
     #: Extra settle time after the wait condition, for frameworks that hydrate
@@ -44,6 +49,39 @@ class BrowserSettings(BaseModel):
     #: throughput win for text crawling -- typically 60-80% less bytes moved.
     block_resources: bool = True
     blocked_resource_types: list[str] = Field(default_factory=lambda: ["image", "media", "font"])
+    #: Drop speculative navigations -- ``<link rel="prefetch">``, Next.js/Nuxt
+    #: route prefetching -- which the browser issues for pages we will crawl and
+    #: dedup ourselves. Measured on a fixture: 1 prefetch link per page nearly
+    #: doubles the HTML a site serves us (56 -> 105 requests over 18 pages at 20
+    #: links per page), for **no** change in our own wall time (2.92s -> 2.99s),
+    #: because prefetch is issued at lowest priority after the page has already
+    #: resolved. So this is a courtesy to the origin, not a speed feature, and it
+    #: is off by default because it is not free everywhere -- see
+    #: :attr:`blocked_hosts` for why.
+    block_prefetch: bool = False
+    #: Hosts whose requests are aborted, matched on the request URL's host and
+    #: any parent domain, e.g. ``google-analytics.com`` also blocks
+    #: ``www.google-analytics.com``. Intended for analytics and tag managers,
+    #: which are uncacheable and contribute nothing to extracted content.
+    #:
+    #: Blocking by *host* rather than by method is deliberate: POST is not a safe
+    #: signal, because GraphQL content APIs are POSTs and dropping them silently
+    #: empties the page.
+    #:
+    #: Cost, and why both this and :attr:`block_prefetch` default to off:
+    #: aborting anything requires a Playwright route, and registering a route --
+    #: even one whose pattern matches nothing -- disables Chromium's HTTP cache
+    #: for the whole browser context. Shared bundles are then refetched for every
+    #: page: measured 1.63x slower end to end. On the scrapy backend this costs
+    #: nothing, because scrapy-playwright installs a route unconditionally and
+    #: its cache is already forfeit; on crawlee you are trading 1.63x of your own
+    #: throughput for the origin's bandwidth. Enable deliberately.
+    blocked_hosts: list[str] = Field(default_factory=list)
+    #: Record what the browser fetched per page -- request counts and bytes by
+    #: resource type -- and log a summary at the end of the crawl. Uses passive
+    #: event listeners, which were measured not to disturb the HTTP cache, so
+    #: unlike the blocking options above this is free to leave on.
+    trace_resources: bool = False
     #: Recycle a browser page after this many navigations to bound the leaks
     #: that accumulate in long-lived renderer processes.
     max_pages_before_recycle: int = Field(200, ge=0)

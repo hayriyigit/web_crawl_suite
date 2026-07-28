@@ -173,7 +173,7 @@ One warm backend per process, callers await their own results, and the state tha
 
 ## JavaScript
 
-`domcontentloaded` is the default on every rendering backend. It fires once the HTML is parsed and synchronous scripts have run, which is enough for client-rendered content, while `load` and `networkidle` also wait on images, fonts, analytics beacons and long-poll connections that may never settle.
+`load` is the default on every rendering backend. `--wait-until domcontentloaded` is faster and enough for server-rendered pages, but it fires before any XHR has returned, so on a client-rendered page it yields the shell — and does so as a fast HTTP 200 that looks like a success.
 
 For frameworks that hydrate a tick later:
 
@@ -184,10 +184,15 @@ polycrawl crawl https://spa.example.com --wait-for "#app .loaded" --settle-ms 25
 **Check that you actually captured the content**, because a fast crawl of empty
 shells looks exactly like a fast crawl. On one real live-scores SPA every backend
 "opened" the page in ~1s and returned 5.3KB with none of the scores in it: the
-data arrives by XHR after DOM-ready. `--settle-ms 2000` or `--wait-until load`
-returned 17.4KB with all of it, in under 3s. Compare text size against
-`--no-render` on a couple of pages — if a browser is not getting you more than
-plain HTTP does, it is only costing you.
+data arrives by XHR after DOM-ready. `--wait-until load` returns 19.2KB with all
+136 scorelines, in under 3s. Compare text size against `--no-render` on a couple
+of pages — if a browser is not getting you more than plain HTTP does, it is only
+costing you.
+
+If a backend appears not to render, this setting is nearly always why: all three
+produce byte-identical output at a given wait strategy. A second cause worth
+ruling out is the service path in `examples/fastapi_service.py`, which sets
+`render: False` and so never launches a browser at all.
 
 This is verified rather than assumed. The test site injects its title, body text and links *only* at `DOMContentLoaded`, so a backend that does not really render fails the suite. `render: false` is held to the opposite assertion — that it does *not* see the JS-injected content — so the mode switch is proven to be a real switch.
 
@@ -206,7 +211,9 @@ Structural choices that matter more than any single number:
 
 - **The frontier is host-fair, not FIFO.** Per-host queues served round-robin, with a min-heap of hosts that are cooling down. A global FIFO holds long runs of a single host, so per-host politeness would throttle the whole crawl.
 - **The result queue is bounded.** When parsing falls behind, `emit` blocks and fetching slows on its own. Fetch and parse budgets (`concurrency` vs `processor_workers`) are separate, so a burst of large pages does not also throttle the network.
-- **`block_resources`** drops images, media and fonts at the network layer — typically 60–80% fewer bytes for text crawling, and the single largest win.
+- **`block_resources`** drops images, media and fonts at the network layer — typically 60–80% fewer bytes for text crawling, and the single largest win. It uses Chromium launch flags, so it costs nothing.
+- **Blocking anything else costs the browser's HTTP cache.** `block_prefetch` and `blocked_hosts` need a Playwright route, and registering a route — whatever it matches — disables the cache for the whole browser context, so shared bundles are refetched per page (**1.63× slower** measured). Both are therefore off by default. They are free on the scrapy backend, whose cache scrapy-playwright already forfeits.
+- **`trace_resources`** reports requests, bytes and cache hit rate by resource type. It uses passive listeners and CDP, neither of which perturbs the cache, so it is free to leave on — and it is the only way to see a dead cache or a prefetch storm, neither of which shows up in crawl output.
 - **`dedup: bloom`** trades a tunable false-positive rate for fixed memory on very large crawls.
 - **Memory pressure pauses dispatch**, measured from `/proc/meminfo` rather than process RSS, because browsers live in child processes and RSS understates badly.
 - selectolax/lexbor for parsing (~10x lxml on real pages), orjson with buffered writes off the event loop, uvloop when available.

@@ -99,7 +99,7 @@ def crawl(
     wait_until: Annotated[
         str,
         typer.Option("--wait-until", help="domcontentloaded | load | networkidle | commit."),
-    ] = "domcontentloaded",
+    ] = "load",
     wait_for: Annotated[
         str | None, typer.Option("--wait-for", help="CSS selector to wait for before capture.")
     ] = None,
@@ -139,6 +139,29 @@ def crawl(
             help="engine (identical on every backend) | backend (native markdown where offered).",
         ),
     ] = "engine",
+    block_prefetch: Annotated[
+        bool,
+        typer.Option(
+            "--block-prefetch",
+            help="Drop speculative <link rel=prefetch> navigations. Halves the HTML load you "
+            "put on a prefetching site; costs the browser cache on crawlee.",
+        ),
+    ] = False,
+    block_host: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--block-host",
+            help="Abort requests to this host and its subdomains, e.g. google-analytics.com "
+            "(repeatable). Same cache cost as --block-prefetch.",
+        ),
+    ] = None,
+    trace_resources: Annotated[
+        bool,
+        typer.Option(
+            "--trace-resources",
+            help="Report what the browser fetched, by resource type. Free: passive listeners.",
+        ),
+    ] = False,
     include_html: Annotated[
         bool, typer.Option("--include-html", help="Keep raw HTML in the output.")
     ] = False,
@@ -204,6 +227,9 @@ def crawl(
                 "wait_for_selector": wait_for,
                 "settle_ms": settle_ms,
                 "page_timeout_ms": timeout_ms,
+                "block_prefetch": block_prefetch,
+                "blocked_hosts": list(block_host or []),
+                "trace_resources": trace_resources,
             },
             politeness={
                 "respect_robots": not no_robots,

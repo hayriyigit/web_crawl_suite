@@ -31,7 +31,7 @@ from .registry import BackendInfo, get_backend, list_backends, register
 from .service import FetchService, ServiceBusy, ServiceStats
 from .sinks import JsonlSink, MemorySink, NullSink, Sink
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "BackendCapabilities",
